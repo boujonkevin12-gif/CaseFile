@@ -1,0 +1,295 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// USUARIO / DETECTIVE
+// ---------------------------------------------------------------------------
+
+model User {
+  id             String   @id @default(cuid())
+  username       String   @unique
+  level          Int      @default(1)
+  xp             Int      @default(0)
+  coins          Int      @default(0)
+  casesSolved    Int      @default(0)
+  casesFailed    Int      @default(0)
+  bestStreak     Int      @default(0)
+  currentStreak  Int      @default(0)
+  bestTimeSecs   Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  investigations   Investigation[]
+  achievements     UserAchievement[]
+  caseProgress     UserCaseUnlock[]
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// CASO
+// ---------------------------------------------------------------------------
+
+enum Difficulty {
+  FACIL
+  MEDIO
+  DIFICIL
+  EXPERTO
+}
+
+model Case {
+  id              String     @id @default(cuid())
+  code            String     @unique // "CASO-001"
+  slug            String     @unique // "el-ultimo-tren"
+  title           String
+  intro           String     @db.Text
+  victimName      String
+  victimAge       Int
+  victimJob       String
+  place           String
+  timeOfCrime     String
+  difficulty      Difficulty @default(FACIL)
+  order           Int        @default(0)
+  requiredLevel   Int        @default(1)
+  guiltySuspectId String? // set only server-side reference, never sent to client pre-resolution
+  motive          String     @db.Text
+  resolutionText  String     @db.Text
+  xpReward        Int        @default(300)
+  coinReward      Int        @default(150)
+  isActive        Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+
+  suspects       Suspect[]
+  clues          Clue[]
+  locations      CaseLocation[]
+  investigations Investigation[]
+  unlockedFor    UserCaseUnlock[]
+
+  @@map("cases")
+}
+
+model UserCaseUnlock {
+  id        String   @id @default(cuid())
+  userId    String
+  caseId    String
+  unlockedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, caseId])
+  @@map("user_case_unlocks")
+}
+
+// ---------------------------------------------------------------------------
+// SOSPECHOSOS
+// ---------------------------------------------------------------------------
+
+model Suspect {
+  id           String  @id @default(cuid())
+  caseId       String
+  name         String
+  age          Int
+  job          String
+  relationship String
+  bio          String  @db.Text
+  avatarColor  String  @default("#8a8a8a")
+  isGuilty     Boolean @default(false) // never exposed to client before case resolves
+  order        Int     @default(0)
+
+  case      Case       @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  dialogues Dialogue[]
+  clues     Clue[]     @relation("ClueImplicatesSuspect")
+
+  @@map("suspects")
+}
+
+// ---------------------------------------------------------------------------
+// UBICACIONES
+// ---------------------------------------------------------------------------
+
+model CaseLocation {
+  id          String @id @default(cuid())
+  caseId      String
+  key         String // "vagon", "anden", "estacion", "oficina-guardia"
+  name        String
+  description String @db.Text
+  order       Int    @default(0)
+
+  case    Case                @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  actions CaseLocationAction[]
+
+  @@unique([caseId, key])
+  @@map("case_locations")
+}
+
+model CaseLocationAction {
+  id         String  @id @default(cuid())
+  locationId String
+  label      String // "Buscar debajo del asiento"
+  resultText String  @db.Text
+  clueId     String? @unique // may or may not reveal a clue
+  order      Int     @default(0)
+
+  location CaseLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  clue     Clue?        @relation(fields: [clueId], references: [id])
+
+  @@map("case_location_actions")
+}
+
+// ---------------------------------------------------------------------------
+// PISTAS / EVIDENCIAS
+// ---------------------------------------------------------------------------
+
+enum ClueType {
+  FISICA
+  TESTIMONIO
+  DOCUMENTO
+  DIGITAL
+}
+
+enum ClueImportance {
+  BAJA
+  MEDIA
+  ALTA
+  CLAVE
+}
+
+model Clue {
+  id          String         @id @default(cuid())
+  caseId      String
+  title       String
+  description String         @db.Text
+  icon        String         @default("Search")
+  type        ClueType       @default(FISICA)
+  importance  ClueImportance @default(MEDIA)
+  isRedHerring Boolean       @default(false)
+  locationKey String? // where it's found, for display
+
+  case                Case                 @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  implicatesSuspect   Suspect?             @relation("ClueImplicatesSuspect", fields: [implicatesSuspectId], references: [id])
+  implicatesSuspectId String?
+  locationActions     CaseLocationAction[]
+  investigationClues  InvestigationClue[]
+  unlockedByDialogueOptions DialogueOption[] @relation("OptionUnlocksClue")
+  requiredForOptions  DialogueOption[]       @relation("OptionRequiresClue")
+
+  @@map("clues")
+}
+
+// ---------------------------------------------------------------------------
+// INTERROGATORIOS (dialogos predefinidos)
+// ---------------------------------------------------------------------------
+
+model Dialogue {
+  id        String @id @default(cuid())
+  suspectId String
+  question  String @db.Text
+  order     Int    @default(0)
+
+  suspect Suspect          @relation(fields: [suspectId], references: [id], onDelete: Cascade)
+  options DialogueOption[]
+
+  @@map("dialogues")
+}
+
+enum DialogueOptionKind {
+  PREGUNTAR
+  MOSTRAR_EVIDENCIA
+  ACUSAR_CONTRADICCION
+  CONTINUAR
+}
+
+model DialogueOption {
+  id               String             @id @default(cuid())
+  dialogueId       String
+  kind             DialogueOptionKind @default(PREGUNTAR)
+  label            String
+  responseText     String             @db.Text
+  requiresClueId   String?
+  unlocksClueId    String?
+  order            Int                @default(0)
+
+  dialogue      Dialogue @relation(fields: [dialogueId], references: [id], onDelete: Cascade)
+  requiresClue  Clue?    @relation("OptionRequiresClue", fields: [requiresClueId], references: [id])
+  unlocksClue   Clue?    @relation("OptionUnlocksClue", fields: [unlocksClueId], references: [id])
+
+  @@map("dialogue_options")
+}
+
+// ---------------------------------------------------------------------------
+// PARTIDA / INVESTIGACION EN CURSO
+// ---------------------------------------------------------------------------
+
+enum InvestigationStatus {
+  EN_CURSO
+  RESUELTO
+  FALLIDO
+}
+
+model Investigation {
+  id            String               @id @default(cuid())
+  userId        String
+  caseId        String
+  status        InvestigationStatus  @default(EN_CURSO)
+  startedAt     DateTime             @default(now())
+  finishedAt    DateTime?
+  accusedSuspectId String?
+  timeSecs      Int?
+  xpEarned      Int?
+  coinsEarned   Int?
+
+  user  User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  case  Case                 @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  clues InvestigationClue[]
+
+  @@map("investigations")
+}
+
+model InvestigationClue {
+  id              String   @id @default(cuid())
+  investigationId String
+  clueId          String
+  discoveredAt    DateTime @default(now())
+
+  investigation Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  clue          Clue          @relation(fields: [clueId], references: [id], onDelete: Cascade)
+
+  @@unique([investigationId, clueId])
+  @@map("investigation_clues")
+}
+
+// ---------------------------------------------------------------------------
+// LOGROS
+// ---------------------------------------------------------------------------
+
+model Achievement {
+  id          String @id @default(cuid())
+  key         String @unique // "primer_caso"
+  title       String
+  description String
+  icon        String @default("Award")
+
+  users UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String   @id @default(cuid())
+  userId        String
+  achievementId String
+  unlockedAt    DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}
